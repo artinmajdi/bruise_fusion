@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "bruise-fusion"
-version = "1.0.0"
+version = "0.1.0"
 description = "Spatial-frequency fusion of white-light and ALS images for bruise analysis"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -33,10 +33,15 @@ dependencies = [
     "pandas>=2.3.0",
     "seaborn>=0.13.0",
     "watchdog>=6.0.0",
+    "pywavelets>=1.8.0",
+    "scikit-image>=0.25.2",
+    "rich>=14.1.0",
+    "rawpy>=0.21.0",
+    "imageio>=2.37.0",
 ]
 
 [tool.setuptools]
-py-modules = ["core", "core2", "dashboard"]
+packages = ["core"]
 
 
 [project.urls]
@@ -46,7 +51,7 @@ Issues        = "https://github.com/artinmajdi/RAP/issues"
 
 
 [project.scripts]
-ui = "dashboard:main"
+ui = "core.dashboard:main"
 
 
 [tool.pytest.ini_options]
