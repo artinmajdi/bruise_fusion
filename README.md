@@ -3,6 +3,7 @@
 [![Python Version](https://img.shields.io/badge/python-3.10%2B-blue.svg)](https://python.org)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Version](https://img.shields.io/badge/version-0.2.1-green.svg)](https://github.com/artinmajdi/RAP)
+[![Live Demo](https://img.shields.io/badge/Live%20Demo-Streamlit-red.svg)](https://imagefuse.streamlit.app/)
 
 An advanced image processing application that combines white-light and ALS (Alternate Light Source) images using spatial-frequency fusion techniques to enhance bruise visibility for forensic and medical analysis.
 
