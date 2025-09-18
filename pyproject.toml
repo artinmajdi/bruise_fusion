@@ -39,7 +39,7 @@ dependencies = [
     "rich>=14.1.0",
     "rawpy>=0.21.0",
     "imageio>=2.37.0",
-    "dotenv>=0.9.9",
+    "python-dotenv>=0.9.9",
 ]
 
 [tool.setuptools]

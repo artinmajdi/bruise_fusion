@@ -36,7 +36,7 @@ requirements = [
 
 # Package metadata
 PACKAGE_NAME = "bruise-fusion"
-VERSION      = "0.2.0"
+VERSION      = "0.2.1"
 AUTHOR       = "Artin Majdi"
 AUTHOR_EMAIL = "mmajdi@gmu.edu"
 DESCRIPTION  = "Spatial-frequency fusion of white-light and ALS images for bruise analysis"
