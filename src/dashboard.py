@@ -23,6 +23,9 @@ from typing import Optional, Tuple, Dict, Any, List
 from src.utils import AdvancedBruiseFusion, FusionConfig, FusionMethod
 from src.settings import logger
 
+# TODO: Check if the deployed streamlit app is running: https://imagefuse.streamlit.app/
+
+
 class BruiseFusionDashboard:
     """Enhanced dashboard for the bruise fusion application."""
 
