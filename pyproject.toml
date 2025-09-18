@@ -38,10 +38,11 @@ dependencies = [
     "rich>=14.1.0",
     "rawpy>=0.21.0",
     "imageio>=2.37.0",
+    "dotenv>=0.9.9",
 ]
 
 [tool.setuptools]
-packages = ["core"]
+packages = ["src"]
 
 
 [project.urls]
@@ -51,7 +52,7 @@ Issues        = "https://github.com/artinmajdi/RAP/issues"
 
 
 [project.scripts]
-ui = "core.dashboard:main"
+ui = "src.dashboard:main"
 
 
 [tool.pytest.ini_options]
