@@ -138,7 +138,7 @@ class BruiseFusionDashboard:
 
             if white_file is not None:
                 white_image = Image.open(white_file)
-                st.image(white_image, caption="White-Light Image", use_container_width=True)
+                st.image(white_image, caption="White-Light Image", width='stretch')
                 st.session_state.white_image = white_image
 
         with col2:
@@ -151,7 +151,7 @@ class BruiseFusionDashboard:
 
             if als_file is not None:
                 als_image = Image.open(als_file)
-                st.image(als_image, caption="ALS Image", use_container_width=True)
+                st.image(als_image, caption="ALS Image", width='stretch')
                 st.session_state.als_image = als_image
 
         return white_file, als_file
@@ -228,13 +228,13 @@ class BruiseFusionDashboard:
         result_col1, result_col2, result_col3 = st.columns(3)
 
         with result_col1:
-            st.image(results['white_resized'], caption="White-Light (Resized)", use_container_width=True)
+            st.image(results['white_resized'], caption="White-Light (Resized)", width='stretch')
 
         with result_col2:
-            st.image(results['als_aligned'], caption="ALS (Aligned)", use_container_width=True)
+            st.image(results['als_aligned'], caption="ALS (Aligned)", width='stretch')
 
         with result_col3:
-            st.image(results['fused_result'], caption="Fused Result", use_container_width=True)
+            st.image(results['fused_result'], caption="Fused Result", width='stretch')
 
         # Download button for fused result
         st.subheader("💾 Download Result")
@@ -265,7 +265,7 @@ class BruiseFusionDashboard:
                     col_idx = i % len(debug_cols)
                     with debug_cols[col_idx]:
                         debug_img = Image.open(debug_file)
-                        st.image(debug_img, caption=debug_file.name, use_container_width=True)
+                        st.image(debug_img, caption=debug_file.name, width='stretch')
 
         # Display processing parameters used
         with st.expander("ℹ️ Processing Parameters Used"):
@@ -315,7 +315,7 @@ class BruiseFusionDashboard:
         white_file, als_file = self._render_image_upload()
 
         # Process button
-        if st.button("🚀 Process Images", type="primary", use_container_width=True):
+        if st.button("🚀 Process Images", type="primary", width='stretch'):
             self._process_images(white_file, als_file, params)
 
         # Display results if processing is complete
