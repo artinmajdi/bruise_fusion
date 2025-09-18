@@ -101,6 +101,22 @@ class BruiseFusionDashboard:
         max_size: int = st.sidebar.slider("Max Image Size", 1000, 3000, 2200, 100,
                                     help="Resize longest side before processing")
 
+        # Alignment method selection
+        st.sidebar.subheader("🎯 Alignment Method")
+        alignment_method: str = st.sidebar.selectbox(
+            "Alignment Algorithm",
+            options=[
+                ("Auto-Select", "auto"),
+                ("ORB + RANSAC (Fast)", "orb"),
+                ("SIFT + RANSAC (High Quality)", "sift"),
+                ("Multi-Scale (Robust)", "multiscale"),
+                ("Hybrid SIFT+ECC (Premium)", "hybrid")
+            ],
+            format_func=lambda x: x[0],
+            index=0,
+            help="Choose alignment method: Auto-Select analyzes images and picks optimal method"
+        )
+
         try_ecc: bool = st.sidebar.checkbox("Try ECC Refinement", False, help="Run ECC refinement after homography alignment")
 
         # Method-specific parameters
@@ -171,6 +187,7 @@ class BruiseFusionDashboard:
 
         return {
             'method'            : method_value,
+            'alignment_method'  : alignment_method[1],  # Extract the method code
             'max_size'          : max_size,
             'try_ecc'           : try_ecc,
             'sigma_low'         : sigma_low,
@@ -258,6 +275,7 @@ class BruiseFusionDashboard:
                 config: FusionConfig = FusionConfig(
                     method             = params['method'],
                     max_size           = params['max_size'],
+                    alignment_method   = params['alignment_method'],
                     try_ecc            = params['try_ecc'],
                     sigma_low          = params['sigma_low'],
                     sigma_high         = params['sigma_high'],

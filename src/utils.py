@@ -58,6 +58,7 @@ class FusionConfig:
 
     # Alignment & pre-processing
     max_size: int = 2200             # resize longest side before processing
+    alignment_method: str = "auto"   # alignment method: auto, orb, sift, multiscale, hybrid
     try_ecc: bool = False            # run ECC refinement after homography
 
     # Frequency domain parameters
@@ -93,6 +94,382 @@ class FusionConfig:
     progress_callback: Optional[Callable[[str, float], None]] = None  # Progress callback
 
 
+class ImageAligner:
+    """Advanced image alignment operations for white-light and ALS images.
+    
+    Provides multiple state-of-the-art alignment methods including:
+    - ORB+RANSAC (fast, robust to illumination)
+    - SIFT+RANSAC (high accuracy, scale invariant)
+    - Multi-scale registration (coarse-to-fine alignment)
+    - Hybrid feature-intensity methods
+    - Enhanced ECC refinement with multiple motion models
+    """
+    def __init__(self, config: FusionConfig) -> None:
+        self.cfg: FusionConfig = config
+        
+        # Initialize feature detectors
+        self.orb = cv2.ORB_create(5000)
+        self.sift = cv2.SIFT_create(5000)
+        
+        # Initialize matcher
+        self.bf_matcher = cv2.BFMatcher(cv2.NORM_HAMMING, crossCheck=False)
+        self.flann_matcher = cv2.FlannBasedMatcher(
+            dict(algorithm=1, trees=5),
+            dict(checks=50)
+        )
+        
+        # Alignment quality metrics
+        self.alignment_metrics: Dict[str, float] = {}
+
+    def align_als_to_white(self, als_bgr: np.ndarray, white_bgr: np.ndarray) -> np.ndarray:
+        """Align ALS to white using the best available method based on image characteristics."""
+        # Reset metrics for new alignment
+        self.alignment_metrics = {}
+        
+        # Check for forced method (used in testing)
+        if hasattr(self, '_force_method'):
+            method = self._force_method
+        else:
+            # Analyze image characteristics to select optimal method
+            method = self._select_alignment_method(als_bgr, white_bgr)
+        
+        self.alignment_metrics['selected_method'] = method
+        
+        if self.cfg.debug_dir is not None:
+            (self.cfg.debug_dir / "01_alignment_method.txt").write_text(f"Selected method: {method}\n")
+        
+        if method == "sift":
+            return self._align_sift_ransac(als_bgr, white_bgr)
+        elif method == "multiscale":
+            return self._align_multiscale(als_bgr, white_bgr)
+        elif method == "hybrid":
+            return self._align_hybrid(als_bgr, white_bgr)
+        else:  # Default to ORB
+            return self._align_orb_ransac(als_bgr, white_bgr)
+    
+    def _select_alignment_method(self, als_bgr: np.ndarray, white_bgr: np.ndarray) -> str:
+        """Select optimal alignment method based on image characteristics."""
+        # Compute image statistics
+        als_gray = cv2.cvtColor(als_bgr, cv2.COLOR_BGR2GRAY)
+        white_gray = cv2.cvtColor(white_bgr, cv2.COLOR_BGR2GRAY)
+        
+        # Analyze texture and contrast
+        als_variance = np.var(als_gray)
+        white_variance = np.var(white_gray)
+        
+        # Analyze edge content
+        als_edges = cv2.Canny(als_gray, 50, 150)
+        white_edges = cv2.Canny(white_gray, 50, 150)
+        edge_ratio = np.sum(als_edges > 0) / als_edges.size
+        
+        # Selection criteria based on research findings
+        if edge_ratio > 0.15 and min(als_variance, white_variance) > 1000:
+            return "sift"  # High texture, good for SIFT
+        elif edge_ratio < 0.05 or abs(als_variance - white_variance) > 5000:
+            return "multiscale"  # Low texture or different characteristics
+        elif edge_ratio > 0.1:
+            return "hybrid"  # Moderate texture, use hybrid approach
+        else:
+            return "orb"  # Default fast method
+    
+    def _align_orb_ransac(self, als_bgr: np.ndarray, white_bgr: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
+        """Original ORB+RANSAC alignment method."""
+        g1: np.ndarray = cv2.cvtColor(als_bgr, cv2.COLOR_BGR2GRAY)
+        g2: np.ndarray = cv2.cvtColor(white_bgr, cv2.COLOR_BGR2GRAY)
+        
+        kp1, des1 = self.orb.detectAndCompute(g1, None)
+        kp2, des2 = self.orb.detectAndCompute(g2, None)
+        
+        if des1 is None or des2 is None or len(kp1) < 8 or len(kp2) < 8:
+            raise RuntimeError("Not enough ORB features to compute alignment.")
+        
+        matches = self.bf_matcher.knnMatch(des1, des2, k=2)
+        good = [m for m, n in matches if m.distance < 0.75 * n.distance]
+        
+        if len(good) < 8:
+            raise RuntimeError(f"Too few good ORB matches ({len(good)}) to estimate homography.")
+        
+        src_pts = np.float32([kp1[m.queryIdx].pt for m in good]).reshape(-1, 1, 2)
+        dst_pts = np.float32([kp2[m.trainIdx].pt for m in good]).reshape(-1, 1, 2)
+        
+        H, mask = cv2.findHomography(src_pts, dst_pts, cv2.RANSAC, 4.0)
+        if H is None:
+            raise RuntimeError("Homography estimation failed.")
+        
+        h, w = white_bgr.shape[:2]
+        warped = cv2.warpPerspective(als_bgr, H, (w, h), flags=cv2.INTER_LINEAR)
+        
+        # Store alignment quality metrics
+        inlier_ratio = np.sum(mask) / len(mask) if mask is not None else 0
+        self.alignment_metrics['orb_inlier_ratio'] = inlier_ratio
+        self.alignment_metrics['orb_matches'] = len(good)
+        
+        if self.cfg.debug_dir is not None:
+            vis = cv2.drawMatches(g1, kp1, g2, kp2, 
+                                [m for i, m in enumerate(good) if mask.ravel()[i] == 1], 
+                                None, matchesMask=mask.ravel().tolist(), flags=2)
+            cv2.imwrite(str(self.cfg.debug_dir / "01_orb_matches.jpg"), vis)
+        
+        return warped, H
+
+    def _align_sift_ransac(self, als_bgr: np.ndarray, white_bgr: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
+        """SIFT+RANSAC alignment for high-accuracy registration."""
+        g1 = cv2.cvtColor(als_bgr, cv2.COLOR_BGR2GRAY)
+        g2 = cv2.cvtColor(white_bgr, cv2.COLOR_BGR2GRAY)
+        
+        # Apply CLAHE for better feature detection
+        clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
+        g1 = clahe.apply(g1)
+        g2 = clahe.apply(g2)
+        
+        kp1, des1 = self.sift.detectAndCompute(g1, None)
+        kp2, des2 = self.sift.detectAndCompute(g2, None)
+        
+        if des1 is None or des2 is None or len(kp1) < 8 or len(kp2) < 8:
+            # Fallback to ORB if SIFT fails
+            return self._align_orb_ransac(als_bgr, white_bgr)
+        
+        # Use FLANN matcher for SIFT features
+        matches = self.flann_matcher.knnMatch(des1, des2, k=2)
+        
+        # Apply Lowe's ratio test with stricter threshold for SIFT
+        good = []
+        for match_pair in matches:
+            if len(match_pair) == 2:
+                m, n = match_pair
+                if m.distance < 0.7 * n.distance:  # Stricter threshold for SIFT
+                    good.append(m)
+        
+        if len(good) < 8:
+            return self._align_orb_ransac(als_bgr, white_bgr)
+        
+        src_pts = np.float32([kp1[m.queryIdx].pt for m in good]).reshape(-1, 1, 2)
+        dst_pts = np.float32([kp2[m.trainIdx].pt for m in good]).reshape(-1, 1, 2)
+        
+        # Use more robust homography estimation
+        H, mask = cv2.findHomography(src_pts, dst_pts, 
+                                   cv2.RANSAC, 
+                                   ransacReprojThreshold=3.0,
+                                   confidence=0.99,
+                                   maxIters=5000)
+        
+        if H is None:
+            return self._align_orb_ransac(als_bgr, white_bgr)
+        
+        h, w = white_bgr.shape[:2]
+        warped = cv2.warpPerspective(als_bgr, H, (w, h), flags=cv2.INTER_LINEAR)
+        
+        # Store quality metrics
+        inlier_ratio = np.sum(mask) / len(mask) if mask is not None else 0
+        self.alignment_metrics['sift_inlier_ratio'] = inlier_ratio
+        self.alignment_metrics['sift_matches'] = len(good)
+        
+        if self.cfg.debug_dir is not None:
+            vis = cv2.drawMatches(g1, kp1, g2, kp2, 
+                                [m for i, m in enumerate(good) if mask.ravel()[i] == 1], 
+                                None, matchesMask=mask.ravel().tolist(), flags=2)
+            cv2.imwrite(str(self.cfg.debug_dir / "02_sift_matches.jpg"), vis)
+        
+        return warped, H
+    
+    def _align_multiscale(self, als_bgr: np.ndarray, white_bgr: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
+        """Multi-scale coarse-to-fine alignment for challenging cases."""
+        # Start with coarse alignment at reduced resolution
+        scale_factor = 0.25
+        h, w = white_bgr.shape[:2]
+        small_h, small_w = int(h * scale_factor), int(w * scale_factor)
+        
+        # Resize images for coarse alignment
+        als_small = cv2.resize(als_bgr, (small_w, small_h), interpolation=cv2.INTER_AREA)
+        white_small = cv2.resize(white_bgr, (small_w, small_h), interpolation=cv2.INTER_AREA)
+        
+        try:
+            # Coarse alignment using ORB
+            warped_small, H_coarse = self._align_orb_ransac(als_small, white_small)
+            
+            # Scale homography back to full resolution
+            scale_matrix = np.array([[1/scale_factor, 0, 0],
+                                   [0, 1/scale_factor, 0],
+                                   [0, 0, 1]], dtype=np.float32)
+            H_scaled = scale_matrix @ H_coarse @ np.linalg.inv(scale_matrix)
+            
+            # Apply coarse transformation
+            warped_coarse = cv2.warpPerspective(als_bgr, H_scaled, (w, h), flags=cv2.INTER_LINEAR)
+            
+            # Fine-tune with ECC at full resolution
+            refined = self._ecc_refine_advanced(warped_coarse, white_bgr)
+            
+            self.alignment_metrics['multiscale_method'] = 'orb_coarse_ecc_fine'
+            
+            return refined, H_scaled
+            
+        except RuntimeError:
+            # Fallback to single-scale ORB
+            return self._align_orb_ransac(als_bgr, white_bgr)
+    
+    def _align_hybrid(self, als_bgr: np.ndarray, white_bgr: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
+        """Hybrid feature-intensity alignment combining multiple approaches."""
+        try:
+            # First attempt: SIFT for initial alignment
+            warped_sift, H_sift = self._align_sift_ransac(als_bgr, white_bgr)
+            
+            # Refine with ECC
+            refined = self._ecc_refine_advanced(warped_sift, white_bgr)
+            
+            # Compute alignment quality
+            ssim_score = ssim(cv2.cvtColor(refined, cv2.COLOR_BGR2GRAY),
+                            cv2.cvtColor(white_bgr, cv2.COLOR_BGR2GRAY),
+                            data_range=255)
+            
+            self.alignment_metrics['hybrid_ssim'] = ssim_score
+            self.alignment_metrics['hybrid_method'] = 'sift_ecc'
+            
+            # If quality is good, return result
+            if ssim_score > 0.7:
+                return refined, H_sift
+            else:
+                # Try multi-scale approach
+                return self._align_multiscale(als_bgr, white_bgr)
+                
+        except RuntimeError:
+            # Fallback to ORB
+            return self._align_orb_ransac(als_bgr, white_bgr)
+    
+    def ecc_refine(self, warped_bgr: np.ndarray, white_bgr: np.ndarray) -> np.ndarray:
+        """Enhanced ECC refinement with multiple motion models."""
+        return self._ecc_refine_advanced(warped_bgr, white_bgr)
+    
+    def _ecc_refine_advanced(self, warped_bgr: np.ndarray, white_bgr: np.ndarray) -> np.ndarray:
+        """Advanced ECC refinement with multiple motion models and preprocessing."""
+        # Try different motion models in order of complexity
+        motion_models = [
+            (cv2.MOTION_TRANSLATION, "translation"),
+            (cv2.MOTION_EUCLIDEAN, "euclidean"), 
+            (cv2.MOTION_AFFINE, "affine"),
+            (cv2.MOTION_HOMOGRAPHY, "homography")
+        ]
+        
+        best_result = warped_bgr
+        best_correlation = -1
+        best_model = "none"
+        
+        for warp_mode, model_name in motion_models:
+            try:
+                result, correlation = self._try_ecc_model(warped_bgr, white_bgr, warp_mode)
+                
+                if correlation > best_correlation:
+                    best_result = result
+                    best_correlation = correlation
+                    best_model = model_name
+                    
+                # If we get good correlation, stop trying more complex models
+                if correlation > 0.8:
+                    break
+                    
+            except cv2.error:
+                continue
+        
+        # Store ECC metrics
+        self.alignment_metrics['ecc_correlation'] = best_correlation
+        self.alignment_metrics['ecc_model'] = best_model
+        
+        if self.cfg.debug_dir is not None:
+            (self.cfg.debug_dir / "03_ecc_results.txt").write_text(
+                f"Best ECC model: {best_model}\n"
+                f"Correlation: {best_correlation:.4f}\n"
+            )
+        
+        return best_result
+    
+    def _try_ecc_model(self, warped_bgr: np.ndarray, white_bgr: np.ndarray, 
+                      warp_mode: int) -> Tuple[np.ndarray, float]:
+        """Try ECC alignment with specific motion model."""
+        # Enhanced preprocessing for better ECC performance
+        im1 = cv2.cvtColor(warped_bgr, cv2.COLOR_BGR2GRAY).astype(np.float32)
+        im2 = cv2.cvtColor(white_bgr, cv2.COLOR_BGR2GRAY).astype(np.float32)
+        
+        # Apply bilateral filter to reduce noise while preserving edges
+        im1 = cv2.bilateralFilter(im1, 5, 50, 50)
+        im2 = cv2.bilateralFilter(im2, 5, 50, 50)
+        
+        # Normalize intensities
+        im1 = cv2.normalize(im1, None, 0, 255, cv2.NORM_MINMAX)
+        im2 = cv2.normalize(im2, None, 0, 255, cv2.NORM_MINMAX)
+        
+        # Initialize warp matrix based on motion model
+        if warp_mode == cv2.MOTION_HOMOGRAPHY:
+            warp_matrix = np.eye(3, dtype=np.float32)
+        else:
+            warp_matrix = np.eye(2, 3, dtype=np.float32)
+        
+        # ECC parameters
+        criteria = (cv2.TERM_CRITERIA_EPS | cv2.TERM_CRITERIA_COUNT, 
+                   500, 1e-6)  # More iterations, tighter convergence
+        
+        # Run ECC
+        correlation, warp_matrix = cv2.findTransformECC(
+            im2, im1, warp_matrix, warp_mode, criteria
+        )
+        
+        # Apply transformation
+        h, w = white_bgr.shape[:2]
+        if warp_mode == cv2.MOTION_HOMOGRAPHY:
+            refined = cv2.warpPerspective(warped_bgr, warp_matrix, (w, h), 
+                                        flags=cv2.INTER_LINEAR)
+        else:
+            refined = cv2.warpAffine(warped_bgr, warp_matrix, (w, h), 
+                                   flags=cv2.INTER_LINEAR)
+        
+        return refined, correlation
+    
+    def get_alignment_quality_report(self) -> Dict[str, Any]:
+        """Generate comprehensive alignment quality report."""
+        report = {
+            'metrics': self.alignment_metrics.copy(),
+            'quality_assessment': {},
+            'recommendations': []
+        }
+        
+        # Analyze alignment quality
+        if 'orb_inlier_ratio' in self.alignment_metrics:
+            ratio = self.alignment_metrics['orb_inlier_ratio']
+            if ratio > 0.7:
+                report['quality_assessment']['orb_quality'] = 'excellent'
+            elif ratio > 0.5:
+                report['quality_assessment']['orb_quality'] = 'good'
+            elif ratio > 0.3:
+                report['quality_assessment']['orb_quality'] = 'fair'
+            else:
+                report['quality_assessment']['orb_quality'] = 'poor'
+                report['recommendations'].append('Consider using SIFT or multi-scale alignment')
+        
+        if 'ecc_correlation' in self.alignment_metrics:
+            corr = self.alignment_metrics['ecc_correlation']
+            if corr > 0.8:
+                report['quality_assessment']['ecc_quality'] = 'excellent'
+            elif corr > 0.6:
+                report['quality_assessment']['ecc_quality'] = 'good'
+            elif corr > 0.4:
+                report['quality_assessment']['ecc_quality'] = 'fair'
+            else:
+                report['quality_assessment']['ecc_quality'] = 'poor'
+                report['recommendations'].append('Images may have significant illumination differences')
+        
+        if 'hybrid_ssim' in self.alignment_metrics:
+            ssim_val = self.alignment_metrics['hybrid_ssim']
+            if ssim_val > 0.8:
+                report['quality_assessment']['overall_quality'] = 'excellent'
+            elif ssim_val > 0.6:
+                report['quality_assessment']['overall_quality'] = 'good'
+            elif ssim_val > 0.4:
+                report['quality_assessment']['overall_quality'] = 'fair'
+            else:
+                report['quality_assessment']['overall_quality'] = 'poor'
+                report['recommendations'].append('Consider manual alignment or different imaging conditions')
+        
+        return report
+
+
 class AdvancedBruiseFusion:
     """Advanced multi-method fusion for white-light and ALS images.
 
@@ -107,6 +484,13 @@ class AdvancedBruiseFusion:
 
         # Initialize quality metrics storage
         self.quality_metrics: Dict[str, float] = {}
+
+        # Initialize image aligner
+        self.aligner = ImageAligner(config)
+        
+        # Set alignment method if not auto
+        if config.alignment_method != "auto":
+            self.aligner._force_method = config.alignment_method
 
         # Method dispatch table
         self.fusion_methods: Dict[FusionMethod, Callable[[np.ndarray, np.ndarray], np.ndarray]] = {
@@ -358,60 +742,6 @@ class AdvancedBruiseFusion:
     def clahe(img8: np.ndarray, clip: float = 2.0) -> np.ndarray:
         clahe: cv2.CLAHE = cv2.createCLAHE(clipLimit=clip, tileGridSize=(8, 8))
         return clahe.apply(img8)
-
-    # -------------------- Alignment --------------------
-    def align_als_to_white(self, als_bgr: np.ndarray, white_bgr: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
-        """Align als_bgr to white_bgr using ORB+RANSAC homography. Returns warped ALS and H."""
-        orb: cv2.ORB = cv2.ORB_create(5000)
-        g1: np.ndarray = cv2.cvtColor(als_bgr, cv2.COLOR_BGR2GRAY)
-        g2: np.ndarray = cv2.cvtColor(white_bgr, cv2.COLOR_BGR2GRAY)
-        kp1: List[cv2.KeyPoint]
-        des1: Optional[np.ndarray]
-        kp2: List[cv2.KeyPoint]
-        des2: Optional[np.ndarray]
-        kp1, des1 = orb.detectAndCompute(g1, None)
-        kp2, des2 = orb.detectAndCompute(g2, None)
-        if des1 is None or des2 is None or len(kp1) < 8 or len(kp2) < 8:
-            raise RuntimeError("Not enough ORB features to compute alignment. Try larger max_size or clearer images.")
-        bf     : cv2.BFMatcher          = cv2.BFMatcher(cv2.NORM_HAMMING, crossCheck=False)
-        matches: List[List[cv2.DMatch]] = bf.knnMatch(des1, des2, k=2)
-        good   : List[cv2.DMatch]       = [m for m, n in matches if m.distance < 0.75 * n.distance]
-        if len(good) < 8:
-            raise RuntimeError(f"Too few good ORB matches ({len(good)}) to estimate homography.")
-        src_pts: np.ndarray = np.float32([kp1[m.queryIdx].pt for m in good]).reshape(-1, 1, 2)
-        dst_pts: np.ndarray = np.float32([kp2[m.trainIdx].pt for m in good]).reshape(-1, 1, 2)
-        H      : Optional[np.ndarray]
-        mask   : Optional[np.ndarray]
-        H, mask = cv2.findHomography(src_pts, dst_pts, cv2.RANSAC, 4.0)
-        if H is None:
-            raise RuntimeError("Homography estimation failed.")
-        h: int
-        w: int
-        h, w = white_bgr.shape[:2]
-        warped: np.ndarray = cv2.warpPerspective(als_bgr, H, (w, h), flags=cv2.INTER_LINEAR)
-        if self.cfg.debug_dir is not None:
-            vis: np.ndarray = cv2.drawMatches(g1, kp1, g2, kp2, [m for i, m in enumerate(good) if mask.ravel()[i] == 1], None, matchesMask=mask.ravel().tolist(), flags=2)
-            cv2.imwrite(str(self.cfg.debug_dir / "01_matches.jpg"), vis)
-        return warped, H
-
-    def ecc_refine(self, warped_bgr: np.ndarray, white_bgr: np.ndarray) -> np.ndarray:
-        """Optional ECC refinement (affine) if intensities are correlated enough."""
-        warp_mode = cv2.MOTION_AFFINE
-        number_of_iterations = 200
-        termination_eps = 1e-5
-        criteria = (cv2.TERM_CRITERIA_EPS | cv2.TERM_CRITERIA_COUNT, number_of_iterations, termination_eps)
-        im1 = cv2.GaussianBlur(cv2.cvtColor(warped_bgr, cv2.COLOR_BGR2GRAY).astype(np.float32), (0, 0), 1.0)
-        im2 = cv2.GaussianBlur(cv2.cvtColor(white_bgr, cv2.COLOR_BGR2GRAY).astype(np.float32), (0, 0), 1.0)
-        warp_matrix = np.eye(2, 3, dtype=np.float32)
-        try:
-            cc, warp_matrix = cv2.findTransformECC(im2, im1, warp_matrix, warp_mode, criteria)
-            h, w = white_bgr.shape[:2]
-            refined = cv2.warpAffine(warped_bgr, warp_matrix, (w, h), flags=cv2.INTER_LINEAR)
-            if self.cfg.debug_dir is not None:
-                (self.cfg.debug_dir / "02_ecc_score.txt").write_text(f"ECC correlation: {cc}\n")
-            return refined
-        except cv2.error:
-            return warped_bgr
 
     # -------------------- Frequency fusion --------------------
     def als_pseudo_luminance(self, als_bgr: np.ndarray) -> np.ndarray:
@@ -1019,9 +1349,9 @@ class AdvancedBruiseFusion:
         als = self.imread_color(als_path)
         white_r, _ = self.resize_max_side(white, self.cfg.max_size)
         als_r, _ = self.resize_max_side(als, self.cfg.max_size)
-        als_aligned, H = self.align_als_to_white(als_r, white_r)
+        als_aligned, H = self.aligner.align_als_to_white(als_r, white_r)
         if self.cfg.try_ecc:
-            als_aligned = self.ecc_refine(als_aligned, white_r)
+            als_aligned = self.aligner.ecc_refine(als_aligned, white_r)
         fused = self.fuse(white_r, als_aligned)
         if self.cfg.debug_dir is not None:
             # side-by-side
