@@ -11,6 +11,15 @@ libfreetype6-dev
 libpng-dev
 libjpeg-dev
 
+# Required for OpenCV
+libgl1-mesa-glx
+libglib2.0-0
+libsm6
+libxext6
+libxrender-dev
+libgomp1
+libgthread-2.0-0
+
 # Required for scipy
 gfortran
 libopenblas-dev

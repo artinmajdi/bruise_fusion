@@ -2,7 +2,7 @@
 
 [deploy]
 # Specify the main app file to run
-main_script = "project_src/visualization/app.py"
+main_script = "src/dashboard.py"
 
 # Specify Python version for deployment
 python_version = "3.12"
