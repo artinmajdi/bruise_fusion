@@ -1,0 +1,55 @@
+[build-system]
+requires = ["setuptools>=64.0.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "bruise-fusion"
+version = "1.0.0"
+description = "Spatial-frequency fusion of white-light and ALS images for bruise analysis"
+readme = "README.md"
+requires-python = ">=3.10"
+authors = [ {name = "Artin Majdi", email = "mmajdi@gmu.edu"} ]
+license = {text = "MIT"}
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: MIT License",
+    "Natural Language :: English",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3 :: Only",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: Implementation :: CPython",
+    "Topic :: Scientific/Engineering :: Image Processing",
+    "Topic :: Scientific/Engineering :: Medical Science Apps.",
+]
+dependencies = [
+    "opencv-python>=4.12.0",
+    "numpy>=2.2.0",
+    "matplotlib>=3.10.0",
+    "streamlit>=1.28.0",
+    "Pillow>=9.0.0",
+    "pandas>=2.3.0",
+    "seaborn>=0.13.0",
+    "watchdog>=6.0.0",
+]
+
+[tool.setuptools]
+py-modules = ["core", "core2", "dashboard"]
+
+
+[project.urls]
+Homepage      = "https://github.com/artinmajdi/RAP"
+Repository    = "https://github.com/artinmajdi/RAP.git"
+Issues        = "https://github.com/artinmajdi/RAP/issues"
+
+
+[project.scripts]
+ui = "dashboard:main"
+
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-v"
+include-package-data = true
